@@ -31,7 +31,6 @@ rm(list=ls())
 gc()
 
 source(here("scripts/mrp_scripts/05_build_logcpo_results.R"))
-dat
 rm(list=ls())
 gc()
 

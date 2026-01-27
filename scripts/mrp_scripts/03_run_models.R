@@ -6,7 +6,10 @@
 #Post-stratification of age/sex/education at county level, according to what is in the model
 
 if (!require("pacman")) install.packages("pacman")
-pacman::p_load(tidyverse, here, INLA, SUMMER,data.table,beepr)
+pacman::p_load(tidyverse,here,SUMMER,data.table,beepr)
+
+#if(!require("INLA")) install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE) 
+library(INLA)
 
 here::i_am("scripts/mrp_scripts/03_run_models.R")
 
@@ -21,7 +24,9 @@ load_data = function(poststrat_vars){
   
   #dat
   load(file = here("data/cleaned_input_data/clean_data_county_with_edu.rda"))
-  
+
+ temp = dat %>% filter(sex == 1) 
+
   dat <<- dat
   post <<- post
   
@@ -234,9 +239,16 @@ prepare_data = function(dat,post,poststrat_vars){
 
 }
 
-run_save_model = function(mf,dat,sex_spec) {
+run_save_model = function(mf,dat,sex_spec,specs) {
 
   require(tidyverse,INLA,data.table)
+  
+  #make copies of age and education for rw1 interaction on age and education
+
+  if(str_detect(specs,"interaction")){
+  dat$age_copy = dat$age
+  dat$edu_copy = dat$edu
+  }
   
   #number of covariates + number of outcome variables (1) + 1
   sim_start = length(mf)+2 
@@ -256,78 +268,10 @@ run_save_model = function(mf,dat,sex_spec) {
                                       return.marginals.predictor=TRUE,
                                       dic = TRUE,
                                       cpo = TRUE),
-               control.predictor = list(compute=TRUE), #need expit it
+               control.predictor = list(compute=TRUE), #need to expit it later
                verbose = FALSE)
 
-  ###Not sure about this code chunk
-  #if (str_detect(as.character(mf), "age +")) {
-    model.fixed = as.data.frame(model$summary.fixed)
-    model.fixed = model.fixed %>%
-      mutate(variable = "fixed",
-             id = "intercept") %>%
-      select(variable, id, everything())
-  #}
-  
-  #extract random effects
-  if (any(str_detect(as.character(mf), "age, model"))) {
-  model.random.age = model$summary.random$age
-  model.random.age = model.random.age %>%
-    mutate(variable = "random",
-           ID = as.character(ID),
-           id = paste(poststrat_vars[1], ID, sep = " ")) %>%
-    select(-ID)
-  } else {
-    model.random.age = data.frame(variable = c(),
-                                  ID = c(),
-                                  id = c())
-  }
-    
-  
-  if (any(str_detect(as.character(mf), "edu, model"))) {
-    model.random.edu = model$summary.random$edu
-    model.random.edu = model.random.edu %>%
-      mutate(variable = "random",
-             ID = as.character(ID),
-             id = paste(poststrat_vars[1], ID, sep = " ")) %>%
-      select(-ID)
-  } else {
-    model.random.edu = data.frame(variable = c(),
-                                  ID = c(),
-                                  id = c())
-  }
-    
-  
-  if (any(str_detect(as.character(mf), "xfips, model"))) {
-  model.random.xfips = model$summary.random$id
-  model.random.xfips = model.random.xfips %>%
-    mutate(variable = "random",
-           ID = as.character(ID),
-           id = paste(poststrat_vars[2],ID, sep = " ")) %>%
-    select(-ID)
-  } else {
-    model.random.xfips = data.frame(variable = c(),
-                                  ID = c(),
-                                  id = c())
-  }
-    
-  
-  model.results = rbind(model.fixed, model.random.age,model.random.edu,model.random.xfips)
-  model.results$dic = NA
-  model.results$dic = model$dic$dic
-  model.results$lcpo = sum(-log(model$cpo$cpo), na.rm = TRUE)
-  failure_check = sum(model$cpo$failure, na.rm = TRUE)
-  
-  if (failure_check == 0) {
-    print(paste0("model ",x,": no failures in log-cpo"))
-  rownames(model.results) = NULL
-  
-  fwrite(model.results, file = here(paste0("data/raw_model_output/model_results/",specs,"sex",sex_spec,".csv")))
-  }
-  
-  if (failure_check > 0) {
-    stop("log-cpo failure")
-  }
-  
+  save(model, file=here(paste0('data/model_objects/',specs,"_sex_",sex_spec,"_model_object.RDS")))
   }
 
 posterior_draw = function(model,post,poststrat_vars,pred_dat,dat,sex_spec) {
@@ -429,10 +373,10 @@ poststratify = function(sims,pred_dat,sex_spec){
       mutate(weight = estimate/N,
              sex_specific_n_i = N) %>% # N = sex-specific n_i
       group_by(across(colnames(temp))) %>%
-      mutate(y = sim_prob * estimate, #y_ijk
-             median_y = round(median(y)), #y_ijk med
-             lw_y = round(quantile(y, probs = c(0.025))),#y_ijk lo
-             up_y = round(quantile(y, probs = c(0.975)))) %>% #y_ijk hi
+      mutate(y = sim_prob * estimate,
+             median_y = round(median(y),2), #y_ijk med
+             lw_y = round(quantile(y, probs = c(0.025)),2),#y_ijk lo
+             up_y = round(quantile(y, probs = c(0.975))),2) %>% #y_ijk hi
       dplyr::select(colnames(temp), median_y, estimate,
                     N, lw_y, up_y,sex_specific_n_i) %>%
       distinct() %>%
@@ -458,7 +402,7 @@ poststratify = function(sims,pred_dat,sex_spec){
   
 }
 
-run_sex_specific_steps = function(dat,post,mf,poststrat_vars,pred_dat,sex_spec,x) {
+run_sex_specific_steps = function(dat,post,mf,poststrat_vars,pred_dat,sex_spec,x,specs) {
 
   dat = dat %>%
     filter(sex == sex_spec)
@@ -471,7 +415,7 @@ run_sex_specific_steps = function(dat,post,mf,poststrat_vars,pred_dat,sex_spec,x
 
   #warning about "identity link will be used to compute the fitted values 
   #for NA data" is fine. We leave warnings verbose to catch other issues.
-  run_save_model(mf,dat,sex_spec)
+  run_save_model(mf,dat,sex_spec,specs)
   gc()
   print(paste0("model ",x,": done running and saving model"))
   posterior_draw(model,post,poststrat_vars,pred_dat,dat,sex_spec)
@@ -492,13 +436,17 @@ run_analysis = function(model_formulae,mod,specs,state_choice,poststrat_vars) {
     sex_list = list(1,0)
     
       for (i in 1:length(sex_list)){
+        
+        print(paste0(specs," modeling sex: ", sex_list[i])) 
+        
         sex_spec = as.integer(sex_list[i])
-        run_sex_specific_steps(dat,post,mf,poststrat_vars,pred_dat,sex_spec,x) 
+        run_sex_specific_steps(dat,post,mf,poststrat_vars,pred_dat,sex_spec,x,specs) 
         if (sex_spec == 1){
-          rowmedians1 <- rowmedians
+          rowmedians1 <- rowmedians #save the first sex-specific set of rowmedians to rbind below
           }
       }
     
+    #bind both sex estimates together
     estimates = rbind(rowmedians1,rowmedians)
     
     fwrite(estimates,file=here(paste0("data/indirect_estimates/complete_estimates_both_sexes/",state_choice,"_mrp_indirect_estimates_vax_",specs,"_bothsexes.csv")))
@@ -520,14 +468,16 @@ run_analysis = function(model_formulae,mod,specs,state_choice,poststrat_vars) {
 #2. a dataframe of model information (`models`) 
 load(file = here("data/cleaned_input_data/model_descriptions.RData"))
 
+models = models[8,]
+model_formulae = model_formulae[8]
 #clean up
 models$poststrat_vars = 
   models$poststrat_vars %>% 
   gsub("\"\"", "", ., fixed=TRUE)
 
-
-#Warning: this is a bit memory intensive as written.
-#NB: each model runs twice because we run each model for each sex independently.
+#### Warning: this is a bit memory intensive as written. ####
+#NB: each model runs !!twice!! because we run each model for each sex 
+#independently.
 #Runtime for the most complex models is less than 50 seconds on 
 #a Macbook Pro 2.4 GHz 8-Core Intel Core i9 with 32GB of memory.
 
@@ -543,6 +493,7 @@ for (x in 1:nrow(models)) {
   mf = as.formula(model_formulae[[x]])
   
   specs = as.character(mod$specs)
+  
   poststrat_vars =
     mod$poststrat_vars %>%
     gsub('\"',"",.)
@@ -561,7 +512,6 @@ for (x in 1:nrow(models)) {
 
 #done running when you hear:
 beepr::beep(3)
-
 
 
 
