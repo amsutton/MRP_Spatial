@@ -4,6 +4,7 @@ if (!require("pacman")) install.packages("pacman")
 pacman::p_load(here,tidyverse,data.table,SUMMER,tidycensus)
 library(INLA)
 
+here::here("scripts/mrp_scripts/06_state_level_model.R")
 
 run_analysis = function(sex_spec,poststrat_vars){
 

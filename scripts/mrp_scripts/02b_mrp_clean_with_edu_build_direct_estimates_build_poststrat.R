@@ -14,7 +14,7 @@ options(tigris_use_cache = TRUE)
 
 tidycensus::census_api_key(Sys.getenv("CENSUS_API_KEY"), overwrite = FALSE, install = FALSE)
 
-here::i_am("scripts/mrp_scripts/02_mrp_clean_with_edu_build_direct_estimates_build_poststrat.R")
+here::i_am("scripts/mrp_scripts/02b_mrp_clean_with_edu_build_direct_estimates_build_poststrat.R")
 
 
 #### set geographic and model string specifications for intuitive labeling ####
