@@ -1,13 +1,14 @@
 #### MRP + Space using CTIS Data ####
 
-#Script 1: Clean data, build survey direct estimates, and poststratification data 
+#Script 02a: Clean data, build survey direct estimates, and poststratification data 
 
 #Build a series of models representing vaccination probability (min. 1 dose)
 #For June 12, 2021 using the COVID-19 Trends and Impacts Survey (CTIS)
 
 #Post-stratification of age/sex/education at county level
 
-pacman::p_load(tidyverse, tidycensus, haven, here, janitor, survey,srvyr, sf, spdep)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(tidyverse, tidycensus, haven, here, janitor, survey,srvyr, sf, spdep, data.table,'ipumsr')
 
 
 options(tigris_use_cache = TRUE)
@@ -237,81 +238,174 @@ acs <- acs %>%
 acs <- acs %>%
   clean_names() %>%
   rename(fips = geoid) %>%
-  select(fips, sex, age, estimate)
+  select(fips, sex, age, estimate, moe)
 
+#harmonize the age categories from 7 to 3, to match the CTIS
 acs <- acs %>%
-  group_by(fips, sex,age) %>%
+  group_by(fips,sex,age) %>%
   reframe(age=age,
-            sex=sex,
-            estimate=sum(estimate)) %>%
+          sex=sex,
+          estimate=sum(estimate,na.rm=TRUE),
+          moe=sum(moe,na.rm=TRUE)) %>%
   distinct()
 
 
 #### Direct Estimates ####
-#get direct estimates of masking in dat by county w/ CI
 
+tempsex = data.frame(sex = c("Female","Female","Female","Male","Male","Male"))
+tempage = data.frame(age = c("18-24 years","25-64 years","65+ years","18-24 years","25-64 years","65+ years"))
+
+#we get the general CTIS, CPS, and ACS estimates first 
+#before we get the direct vaccination estimates
+ddi <- ipumsr::read_ipums_ddi(here("data/cpsmarch2017/cps_00001.xml"))
+cps <- read_ipums_micro(ddi)
+
+cps=
+  cps%>%
+  clean_names() %>%
+  filter(statefip == 06, #California
+         age >= 18, #adults
+         sex != 9) %>% #no nulls
+  select(sex,age,wtfinl) %>%
+  mutate(sex = ifelse(sex==2,"Female","Male"),
+         age2 = case_when(age %in% c(18:24) ~ 1,
+                          age %in% c(25:64) ~ 2,
+                          age >= 65 ~ 3))
+
+#total population used for the CTIS (less than the ACS we use!)
+sum(cps$wtfinl,na.rm = TRUE) #620133 people less
+
+cps = cps %>%
+  group_by(sex,age2) %>%
+  reframe(estimate = sum(wtfinl,na.rm=TRUE)) 
+
+cps$se = sqrt(cps$estimate * (1-cps$estimate / sum(cps$estimate)))
+cps$me = cps$se * 1.96
+cps$lower = cps$estimate - cps$me
+cps$upper = cps$estimate + cps$me
+cps$prop_estimate = signif(cps$estimate/sum(cps$estimate),3)
+cps$prop_lower = signif(cps$lower/sum(cps$estimate),3)
+cps$prop_upper = signif(cps$upper/sum(cps$estimate),3)
+cps$prop_ci.95 = paste0("(",cps$prop_lower,", ",cps$prop_upper,")")
+cps$age2 = tempage$age
+
+fwrite(cps,here('results/tables/weights_comparison/currentpopulationsurvey_march2017_demographic_estimates.csv'))
+
+
+
+#check Meta weights for CTIS
 ctis$fips2 <- sprintf("%05s", ctis$xfips)
 ctis$fips2 <- substr(ctis$fips2, 1, 2)
 
-# #reweight to specifically CA population
-# #uncertain about this:
-# ctis$weight2 = 30513773 * (ctis$weight/sum(ctis$weight))
+meta_design = as_survey_design(ctis, 
+                        ids = 1, 
+                        weights = weight, 
+                        strata = fips2)
 
-ctis_usd <- svydesign(ids = ~1, 
-                      weights = ctis$weight, 
-                      strata = ctis$fips2, 
-                      data = ctis)
-
-
-# 567289216/30513773*30
-# 567289216/30
-# 1830374+2995085+2759655+4847781+2702808+1742201+2839782+2639320+4865089+3291678
-# 3794976/25296329
+#these are coming out correct using srvyr
+meta_proportions = meta_design  %>%
+  filter(fips2 == "06") %>%
+  group_by(interact(sex,age2)) %>%
+  reframe(prop = survey_prop(vartype="ci")) 
 
 
-temp = c(
-  as.data.frame(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 0 & age2 == 1), na.rm=T)),
-  as.data.frame(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 0 & age2 == 2), na.rm=T)),
-  as.data.frame(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 0 & age2 == 3), na.rm=T)),
-  as.data.frame(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 1 & age2 == 1), na.rm=T)),
-  as.data.frame(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 1 & age2 == 2), na.rm=T)),
-  as.data.frame(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 1 & age2 == 3), na.rm=T))
-  )
+#the weights here are daily weights, meaning we have to divide the weights
+#by the number of days in the survey month to get the correct weighting for
+#survey totals: n_distinct(ctis$start_date), i.e., 30 days in June. 
+#This isn't a concern for the proportions above because it's proportional!
 
-temp = as.data.frame(temp)
-temp2 = temp[grepl("mean", names(temp))] %>% t()
-rownames(temp2) = NULL
+meta_estimates = meta_design  %>%
+  filter(fips2 == "06") %>%
+  group_by(sex,age2) %>%
+  reframe(est = survey_total(vartype = "ci") / n_distinct(ctis$start_date))
 
-confint = c(
-  as.data.frame(confint(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 0 & age2 == 1), na.rm=T),level = 0.95)),
-  as.data.frame(confint(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 0 & age2 == 2), na.rm=T),level = 0.95)),
-  as.data.frame(confint(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 0 & age2 == 3), na.rm=T),level = 0.95)),
-  as.data.frame(confint(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 1 & age2 == 1), na.rm=T),level = 0.95)),
-  as.data.frame(confint(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 1 & age2 == 2), na.rm=T),level = 0.95)),
-  as.data.frame(confint(svymean(~vax, subset(ctis_usd,fips2=="06" & sex == 1 & age2 == 3), na.rm=T),level = 0.95))
-)
+#however, the Meta weights are still poorly estimating the population!
+sum(meta_estimates$est) == sum(cps$estimate)
 
-confint = as.data.frame(confint)
-confint_lw = confint[grepl("X2", names(confint))] %>% t()
-confint_up = confint[grepl("X9", names(confint))] %>% t()
-rownames(confint_lw) = NULL
-rownames(confint_up) = NULL
+#it's underestimating by 8,038,947 people -- that's a problem.
+sum(cps$estimate) - sum(meta_estimates$est)
 
-tempsex = data.frame(sex = c("female","female","female","male","male","male"))
-tempage = data.frame(age = c("18-24 years","25-64 years","65+ years","18-24 years","25-64 years","65+ years"))
-
-temp = cbind(tempsex,tempage,temp2,confint_lw,confint_up)
-
-direct = temp %>% rename("mean"="temp2","mean_lw"="confint_lw","mean_up"="confint_up")
+direct = cbind(meta_estimates,meta_proportions[,3:5])
 
 direct = direct %>%
   mutate(
-         mean = signif(mean, digits = 3),
-         mean_lw = signif(mean_lw, digits = 3),
-         mean_up = signif(mean_up, digits = 3),
-         ci = paste0("(",mean_lw,", ",mean_up,")"))
+    across(prop:prop_upp, ~ signif(.x,3)),
+    across(est:est_upp, ~ round(.x)),
+    est.ci95 = paste0("(",est_low,", ",est_upp,")"),
+    prop.ci95 = paste0("(",prop_low,", ",prop_upp,")")) %>%
+  select(matches("est"),matches("prop"))
 
-write.csv(direct, here("/Users/Aja/Documents/R Directories/NSF_RAPID_COVID19_Survey/Aja/COVID_Behaviors/data/smrp/direct_estimates/ctis_vax_direct_estimates_not_boostrapped.csv"))
+direct = cbind(tempsex,tempage,direct)
+
+write.csv(direct, here('results/tables/weights_comparison/ctis_direct_demographic_estimates.csv'))
+
+
+#get direct estimates of vaccines by county w/ CI
+#build CTIS weights and get estimates for vaccination
+
+# ctis$vax = factor(ctis$vax)
+# ctis$age2 = factor(ctis$age2)
+# ctis$sex = factor(ctis$sex)
+# ctis = ctis %>% filter(!is.na(vax))
+
+#get vaccine estimates by sex and age
+meta_proportions = meta_design  %>%
+  srvyr::filter(fips2 == "06") %>%
+  group_by(interact(vax,sex,age2)) %>%
+  reframe(prop = survey_prop(vartype="ci",na.rm=TRUE)) %>%
+  filter(vax == 1)
+
+
+#again, recall: 
+#the weights here are daily weights, meaning we have to divide the weights
+#by the number of days in the survey month to get the correct weighting for
+#survey totals: n_distinct(ctis$start_date), i.e., 30 days in June. 
+#This isn't a concern for the proportions above because it's proportional!
+
+meta_estimates = meta_design  %>%
+  filter(fips2 == "06") %>%
+  group_by(vax,sex,age2) %>%
+  reframe(est = survey_total(vartype = "ci",na.rm = TRUE) / n_distinct(ctis$start_date)) %>%
+  filter(vax == 1)
+
+
+direct = cbind(meta_estimates,meta_proportions[,4:6])
+
+direct = direct %>%
+  mutate(
+    across(prop:prop_upp, ~ signif(.x,3)),
+    across(est:est_upp, ~ round(.x)),
+    est.ci95 = paste0("(",est_low,", ",est_upp,")"),
+    prop.ci95 = paste0("(",prop_low,", ",prop_upp,")")) %>%
+  select(matches("est"),matches("prop"))
+
+direct = cbind(tempsex,tempage,direct)
+
+write.csv(direct, here('data/direct_estimates/ctis_vax_direct_estimates_not_boostrapped_no_edu.csv'))
+
+#acs estimates at the state level
+acs_state = acs %>%
+  group_by(sex,age) %>%
+  reframe(estimate = sum(estimate,na.rm=TRUE),
+          moe = sum(moe,na.rm=TRUE))
+
+acs_state$lower = acs_state$estimate - acs_state$moe
+acs_state$upper = acs_state$estimate + acs_state$moe
+acs_state$prop_estimate = signif(acs_state$estimate/sum(acs_state$estimate),3)
+acs_state$prop_lower = signif(acs_state$lower/sum(acs_state$estimate),3)
+acs_state$prop_upper = signif(acs_state$upper/sum(acs_state$estimate),3)
+acs_state$prop_ci.95 = paste0("(",acs_state$prop_lower,", ",acs_state$prop_upper,")")
+
+acs_state = 
+  acs_state %>%
+  mutate(age = case_when(age == 1 ~ "18-24 years",
+            age == 2 ~ "25-64 years",
+            age == 3 ~ "65+ years"),
+  sex = case_when(sex == 1 ~ "Male",
+            sex == 0 ~ "Female"))
+
+fwrite(acs_state,here('results/tables/weights_comparison/2023_acs_5yr_demographic_estimates.csv'))
+
 
 
 #### unweighted proportions in the CTIS for descriptive statistics####
@@ -336,7 +430,7 @@ ctis_desc = ctis %>%
   arrange(sex, age, edu)
 
 
-write.csv(ctis_desc, here("/Users/Aja/Documents/R Directories/NSF_RAPID_COVID19_Survey/Aja/COVID_Behaviors/data/smrp/direct_estimates/ctis_unweighted_descriptiveprops_age_sex_edu.csv"))
+write.csv(ctis_desc, here("data/direct_estimates/ctis_unweighted_descriptiveprops_age_sex_edu.csv"))
 
 
 
@@ -372,7 +466,7 @@ plot(nb.r, coords, add=TRUE,pch=19)
 nb2INLA(here("map.adj"), nb.r)
 g.graph <- INLA::inla.read.graph(filename = "map.adj")
 
-save(g.graph, file = here("Aja/COVID_Behaviors/data/smrp/cleaned_data/spatialgraph.rda"))
+save(g.graph, file = here("data/cleaned_output_data/cleaned_data/spatialgraph.rda"))
 
 #### Build Data (post-strat data and survey data): Case-Specific for Spatial MRP ####
 # 
@@ -452,7 +546,7 @@ dat <- dat %>%
 
 
 #write graph, acs, dat and post object to rda
-save(geo, file=here("Aja/COVID_Behaviors/data/smrp/cleaned_data/ca_geo_sf_county.rda"))
-save(dat, file = here("Aja/COVID_Behaviors/data/smrp/clean_data_county.rda"))
-save(post, file = here("Aja/COVID_Behaviors/data/smrp/clean_postrat_age_sex_county.rda"))
+save(geo, file=here("data/cleaned_output_data/ca_geo_sf_county.rda"))
+save(dat, file = here("data/cleaned_output_data/clean_data_county.rda"))
+save(post, file = here("data/cleaned_output_data/clean_postrat_age_sex_county.rda"))
 
