@@ -10,6 +10,7 @@ pacman::p_load(tidyverse,here,SUMMER,data.table,beepr)
 
 #if(!require("INLA")) install.packages("INLA",repos=c(getOption("repos"),INLA="https://inla.r-inla-download.org/R/stable"), dep=TRUE) 
 library(INLA)
+options(scipen = 999)
 
 here::i_am("scripts/mrp_scripts/03_run_models.R")
 
