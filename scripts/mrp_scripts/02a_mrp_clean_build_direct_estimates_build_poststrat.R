@@ -121,8 +121,8 @@ dat <- ctis %>%
 #number of respondents in California in June 2021 for whom we have all the data:
 dat %>% select(-state) %>% na.omit() %>% nrow()
 
-#sanity check: it is a reasonable number of ZIP codes for the context
-length(unique(dat$xzip))
+#sanity check: it is a reasonable number of counties for the context (missing one, but we know this)
+length(unique(dat$xfips))
 
 #### get county geographies using tigris ####
 #county are only available by state for 2000 and 2010
@@ -198,10 +198,6 @@ acs <- left_join(vars, acs,  by=c("name"="variable"))
 #                          )) %>%
 #       filter(!str_detect(concept, "ALONE|HISPANIC|RACES"))
 
-keep_ages = c("18 and 19 years","20 to 24 years","25 to 29 years",
-              "30 to 34 years","35 to 44 years","45 to 54 years",
-              "55 to 64 years","65 to 74 years","75 to 79 years",
-              "85 years and over")
 
 acs <- 
   acs %>% #18-24, 25-34, 35-44, 45-54, 55-64, 65+
@@ -209,9 +205,8 @@ acs <-
   mutate(age = case_when(str_detect(label, "18|20|21|22|24") ~ 1,
                          str_detect(label, "29|34") ~ 2,
                          str_detect(label, "35|44") ~ 3,
-                         str_detect(label, "45|54") ~ 4,
-                         str_detect(label, "55|60|62") ~ 5,
-                         str_detect(label, "65|67|70|75|80|85") ~ 4
+                         str_detect(label, "45|50|55|60|62") ~ 4,
+                         str_detect(label, "65|67|70|75|80|85") ~ 5
                         )) %>%
   filter(
          !is.na(age)) 
@@ -374,12 +369,10 @@ write.csv(direct, here('results/tables/weights_comparison/ctis_direct_demographi
 
 #get vaccine estimates by sex and age
   meta_proportions = meta_design  %>%
-    srvyr::filter(fips2 == "06",
-                  vax == 1) %>%
-    group_by(sex,age2) %>%
+    srvyr::filter(fips2 == "06") %>%
+    group_by(vax,sex,age) %>%
     reframe(prop = survey_prop(vartype="ci",na.rm=TRUE)) %>%
-  pull(prop) %>%
-  sum()
+    filter(vax==1)
 
 
 #again, recall:
@@ -463,7 +456,7 @@ alt_vax_est = left_join(temp,alt_vax_est,by=c("sex","age"))
 
 alt_vax_est
 
-write.csv(alt_vax_est, here('data/direct_estimates/ctis_vax_direct_estimates_not_boostrapped_no_edu.csv'))
+write.csv(alt_vax_est, here('data/direct_estimates/ctis_vax_direct_estimates_not_boostrapped_no_edu_alt.csv'))
 
 #acs estimates at the state level
 acs_state = acs %>%

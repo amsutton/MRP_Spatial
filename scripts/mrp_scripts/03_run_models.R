@@ -26,7 +26,7 @@ load_data = function(poststrat_vars){
   #dat
   load(file = here("data/cleaned_input_data/clean_data_county_with_edu.rda"))
 
- temp = dat %>% filter(sex == 1) 
+# temp = dat %>% filter(sex == 1) 
 
   dat <<- dat
   post <<- post
@@ -456,8 +456,6 @@ run_analysis = function(model_formulae,mod,specs,state_choice,poststrat_vars) {
 
 
 #### Run Full Analysis ####
-#there are 42 uniquely described models; double it because we're running it for 
-#both sexes (84 models to run total)
 
 #because of the list of formulae and the df of model data, 
 #it's simplest to for-loop
@@ -469,8 +467,6 @@ run_analysis = function(model_formulae,mod,specs,state_choice,poststrat_vars) {
 #2. a dataframe of model information (`models`) 
 load(file = here("data/cleaned_input_data/model_descriptions.RData"))
 
-models = models[8,]
-model_formulae = model_formulae[8]
 #clean up
 models$poststrat_vars = 
   models$poststrat_vars %>% 
@@ -479,8 +475,9 @@ models$poststrat_vars =
 #### Warning: this is a bit memory intensive as written. ####
 #NB: each model runs !!twice!! because we run each model for each sex 
 #independently.
-#Runtime for the most complex models is less than 50 seconds on 
+#Runtime for the most complex models is just over 80 seconds on 
 #a Macbook Pro 2.4 GHz 8-Core Intel Core i9 with 32GB of memory.
+
 
 for (x in 1:nrow(models)) {
 
@@ -501,6 +498,12 @@ for (x in 1:nrow(models)) {
 
   #reload the clean data
   load_data(poststrat_vars)
+  
+  post = post %>%
+    mutate(sex = case_when(sex == "Female" ~ 0,
+                           sex == "Male" ~ 1,
+                         sex == 1 ~ 1,
+                         sex == 0 ~ 0))
   
   run_analysis(mf,mod,specs,state_choice,poststrat_vars)
   
